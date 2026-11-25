@@ -490,9 +490,6 @@ test.each(["missing", "conflicting"] as const)(
     };
     await command.run(ctx, [], scene.pipeline);
     expect(shown.join("\n")).toContain("Cancelled. Nothing was imported.");
-    shown.length = 0;
-    await command.run(ctx, [scene.id], scene.pipeline);
-    expect(shown.join("\n")).toContain("Source: claude-code");
     expect(await snapshot(scene.targetHome)).toEqual({});
   },
 );

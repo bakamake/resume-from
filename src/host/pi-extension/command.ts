@@ -10,6 +10,7 @@ import type {
   ListRequest,
   PiCommandContext,
   PiResumeFromCommand,
+  PreviewReport,
   SelectionInput,
   SessionPicker,
   TargetProfile,
@@ -25,11 +26,12 @@ const CONFIRM_QUESTION = "Import this session? (y/N)";
 const CANCELLED_LINE = "Cancelled. Nothing was imported.";
 const HELP_ARGUMENTS = new Set(["help", "-h", "--help"]);
 const HELP_LINES = [
-  `Usage: /${RESUME_FROM_COMMAND_NAME} [<session-id> | <file-path>]`,
+  `Usage: /${RESUME_FROM_COMMAND_NAME} [<session-id> | <file-path> | <directory>]`,
   "No argument opens the session selector.",
-  "<session-id> previews the matching session.",
-  "<file-path> previews an absolute or relative session file.",
-  "Pi asks for confirmation before importing anything.",
+  "The selection is previewed and confirmed before importing.",
+  "<session-id> imports the matching session directly.",
+  "<file-path> imports an absolute or relative session file directly.",
+  "<directory> imports every session of that workspace directly.",
 ];
 const USAGE_LINE = HELP_LINES[0] ?? `Usage: /${RESUME_FROM_COMMAND_NAME}`;
 const BLOCKED_FALLBACK = "The import is blocked.";
@@ -70,14 +72,20 @@ async function runResumeFrom(
 
   const workspace = await workspaceArgument(args);
   if (workspace !== null) scope.workspacePath = workspace;
+  const direct = explicitSelection(args);
   const selections = await resolveSelections(deps, args, pipeline, scope, workspace);
   if (selections === null) return;
 
-  const prepared: Array<{
-    request: ImportRequest;
-    report: Awaited<ReturnType<ImportPipeline["preview"]>>;
-  }> = [];
   const requests = selections.map((selection): ImportRequest => ({ ...scope, selection }));
+  // An explicit argument is the confirmation: the user named what to import, so import it.
+  if (direct) {
+    await importRequests(deps, ctx, requests, pipeline);
+    return;
+  }
+
+  const prepared: { request: ImportRequest; report: PreviewReport }[] = [];
+  // A long silent phase reads as death: name the count before the previews run.
+  if (requests.length > 1) deps.ui.show([`Previewing ${requests.length} sessions…`]);
   let next = 0;
   const preview = async () => {
     for (;;) {
@@ -102,10 +110,35 @@ async function runResumeFrom(
     deps.ui.show([CANCELLED_LINE]);
     return;
   }
-  for (const [index, { request, report }] of prepared.entries()) {
-    const runtime = index === prepared.length - 1 ? ctx : stayingRuntime();
+  await importRequests(
+    deps,
+    ctx,
+    prepared.map(({ request }) => request),
+    pipeline,
+    prepared.map(({ report }) => report.confirmationToken),
+  );
+}
+
+/** True when the user named what to import, making preview and confirmation redundant. */
+function explicitSelection(args: string[]): boolean {
+  const given = args.filter((argument) => argument.trim().length > 0);
+  return given.length === 1 && !HELP_ARGUMENTS.has(given[0] ?? "");
+}
+
+/** Commits the requests in order, moving the user only on the last one. */
+async function importRequests(
+  deps: ResumeFromDeps,
+  ctx: PiCommandContext,
+  requests: ImportRequest[],
+  pipeline: ImportPipeline,
+  tokens: (string | null)[] = [],
+): Promise<void> {
+  if (requests.length > 1) deps.ui.show([`Importing ${requests.length} sessions…`]);
+  for (const [index, request] of requests.entries()) {
+    const runtime = index === requests.length - 1 ? ctx : stayingRuntime();
+    const token = tokens[index] ?? null;
     const landing = await withDiagnostic(deps.ui, "import", () =>
-      pipeline.commit(request, runtime, report.confirmationToken),
+      pipeline.commit(request, runtime, token),
     );
     if (landing === null) return;
     if (!landing.switched) present(deps.ui, landing);
@@ -187,6 +220,12 @@ async function resolveSelections(
 
   if (workspace !== null) {
     const group = listing.rows.filter((row) => pathOf(row) === workspace);
+    if (group.length === 0) {
+      // A path argument the listing cannot place is answered, never followed by a
+      // confirmation over nothing.
+      deps.ui.show([`No sessions to import for ${workspace}.`]);
+      return null;
+    }
     return group.map((row): SelectionInput => ({ by: "file-path", path: row.filePath })).reverse();
   }
   const picked = await deps.picker.pick(listing);

@@ -97,7 +97,7 @@ interface SessionRef {
 ```ts
 /** One import, from listing to landing. Every host drives these three calls. */
 interface ImportPipeline {
-  /** Runs only after the user confirmed the preview (FR-20). */
+  /** Confirmed preview token (FR-20); null when the user named the session explicitly. */
   commit(
     request: ImportRequest,
     runtime: AgentRuntime,

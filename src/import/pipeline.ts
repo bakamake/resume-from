@@ -222,12 +222,13 @@ export function createPipelineFromStages(stages: PipelineStages): ImportPipeline
     async commit(
       request: ImportRequest,
       runtime: AgentRuntime,
-      suppliedToken: string,
+      suppliedToken: string | null,
     ): Promise<LandingResult> {
       const adapter = targetAdapter(stages.adapters, request.target);
       const { descriptor, destination, plan, report } = await compute(request);
 
-      if (!confirmationMatches(report.confirmationToken, suppliedToken)) {
+      // A null token is an explicit selection: nothing was previewed, so nothing can drift.
+      if (suppliedToken !== null && !confirmationMatches(report.confirmationToken, suppliedToken)) {
         throw new ImportFailure(
           "confirmation",
           `The source session, destination, or preview changed after confirmation. Nothing was written to ${request.target.home}. ${PREVIEW_AGAIN}`,

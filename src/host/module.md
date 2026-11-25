@@ -598,7 +598,7 @@ interface ImportPipeline {
   list(request: ListRequest): Promise<Listing>;
   /** Writes nothing (FR-16). */
   preview(request: ImportRequest): Promise<PreviewReport>;
-  /** Runs only after the user confirmed the preview (FR-20). */
+  /** Confirmed preview token (FR-20); null when the user named the session explicitly. */
   commit(
     request: ImportRequest,
     runtime: AgentRuntime,

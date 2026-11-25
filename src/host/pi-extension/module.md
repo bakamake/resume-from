@@ -19,9 +19,10 @@ switch of C-10 needs a live command context, and a command binary in another pro
 - Register the `/resume-from` command with Pi.
 - Open an interactive picker over the listing grouped by path: every entry is a path, move with the
   arrow keys, select with Enter (FR-9).
-- Accept a session ID or a file path as an argument, skipping the picker (FR-12).
+- Accept a session ID, a file path, or a workspace directory as an argument, skipping the picker
+  (FR-12). An explicit argument imports directly: no preview, no confirmation.
 - Import the sessions of the chosen path one by one, each through the single-session mechanism:
-  preview, confirmation, commit (FR-16, FR-20, FR-21).
+  preview, confirmation, commit for the picker (FR-16, FR-20, FR-21), direct commit for an argument.
 - Commit through the pipeline, passing Pi's command context as the runtime handle so the Pi adapter
   can switch (FR-44).
 - Show the provenance marker to the user without putting it in the model context (FR-47, FR-48).
@@ -286,7 +287,7 @@ interface ImportPipeline {
   list(request: ListRequest): Promise<Listing>;
   /** Writes nothing (FR-16). */
   preview(request: ImportRequest): Promise<PreviewReport>;
-  /** Runs only after the user confirmed the preview (FR-20). */
+  /** Confirmed preview token (FR-20); null when the user named the session explicitly. */
   commit(
     request: ImportRequest,
     runtime: AgentRuntime,
@@ -457,8 +458,8 @@ picker. Tests marked **live** need an installed Pi and a throwaway session direc
 
 **T-PIX-5 — an argument skips the picker**
 - Scenario: parameterized — a session ID, an absolute file path.
-- Expected behavior: the picker is not opened and `preview` is called with the right
-  `SelectionInput` (FR-12).
+- Expected behavior: the picker is not opened and `commit` is called directly with the right
+  `SelectionInput` and a null token — no preview, no confirmation (FR-12).
 
 **T-PIX-6 — the target is the Pi home the user is in**
 - Scenario: `PiCommandContext.home` is set to a non-default Pi home.

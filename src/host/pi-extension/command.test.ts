@@ -125,7 +125,7 @@ interface PipelineStub {
   commitCalls: {
     request: ImportRequest;
     runtime: AgentRuntime;
-    confirmationToken: string;
+    confirmationToken: string | null;
   }[];
   order: string[];
 }
@@ -135,7 +135,11 @@ function stubPipeline(
     listing?: Listing;
     preview?: PreviewReport;
     landing?: LandingResult;
-    onCommit?: (request: ImportRequest, runtime: AgentRuntime, confirmationToken: string) => void;
+    onCommit?: (
+      request: ImportRequest,
+      runtime: AgentRuntime,
+      confirmationToken: string | null,
+    ) => void;
     emulateSwitch?: boolean;
   } = {},
 ): PipelineStub {
@@ -307,7 +311,7 @@ describe("command help", () => {
     );
 
     expect(ui.blocks.flat().join("\n")).toContain(
-      "Usage: /resume-from [<session-id> | <file-path>]",
+      "Usage: /resume-from [<session-id> | <file-path> | <directory>]",
     );
     expect(ui.blocks.flat().join("\n")).toContain("No argument opens the session selector.");
     expect(pipeline.order).toEqual([]);
@@ -350,7 +354,7 @@ describe("T-PIX-5 — an argument skips the picker", () => {
     },
   ];
 
-  it.each(cases)("$name previews without a picker", async ({ argument, selection }) => {
+  it.each(cases)("$name imports directly without a picker", async ({ argument, selection }) => {
     const pipeline = stubPipeline();
     const picked = stubPicker({ choice: "cancelled", selected: null });
     const ui = stubUi(["cancelled"]);
@@ -364,8 +368,10 @@ describe("T-PIX-5 — an argument skips the picker", () => {
 
     expect(picked.calls).toEqual([]);
     expect(pipeline.listCalls).toEqual([]);
-    expect(pipeline.previewCalls).toHaveLength(1);
-    expect(pipeline.previewCalls[0]?.selection).toEqual(selection);
+    expect(pipeline.previewCalls).toEqual([]);
+    expect(pipeline.commitCalls).toHaveLength(1);
+    expect(pipeline.commitCalls[0]?.request.selection).toEqual(selection);
+    expect(pipeline.commitCalls[0]?.confirmationToken).toBeNull();
   });
 });
 
@@ -385,7 +391,7 @@ describe("T-PIX-6 — the target is the Pi home the user is in", () => {
       pipeline.pipeline,
     );
 
-    const request = pipeline.previewCalls[0];
+    const request = pipeline.commitCalls[0]?.request;
     expect(request?.target).toEqual({
       agent: "pi",
       home: "/Users/me/.pi-work",
@@ -402,13 +408,13 @@ describe("T-PIX-7 — the preview is shown verbatim", () => {
   it("shows exactly PreviewReport.lines, in order, as one unmodified block", async () => {
     const lines = ["From codex /Users/me/.codex", "Budget: 34k tokens of a 200k window", "! repo"];
     const pipeline = stubPipeline({ preview: report({ lines }) });
-    const picked = stubPicker({ choice: "cancelled", selected: null });
+    const picked = stubPicker({ choice: "selected", selected: selection([descriptor()]) });
     const ui = stubUi(["cancelled"]);
     const { ctx } = stubContext();
 
     await createResumeFromCommand(deps({ picker: picked.picker, ui: ui.ui })).run(
       ctx,
-      ["cx-1"],
+      [],
       pipeline.pipeline,
     );
 
@@ -424,13 +430,13 @@ describe("T-PIX-8 — confirmation commits, cancellation does not", () => {
 
   it.each(cases)("$name", async ({ answer, commits }) => {
     const pipeline = stubPipeline();
-    const picked = stubPicker({ choice: "cancelled", selected: null });
+    const picked = stubPicker({ choice: "selected", selected: selection([descriptor()]) });
     const ui = stubUi([answer]);
     const { ctx } = stubContext();
 
     await createResumeFromCommand(deps({ picker: picked.picker, ui: ui.ui })).run(
       ctx,
-      ["cx-1"],
+      [],
       pipeline.pipeline,
     );
 
@@ -596,13 +602,13 @@ describe("T-PIX-12 — a blocked preview offers no confirmation", () => {
       lines: ["From codex, into pi", "Blocked"],
     });
     const pipeline = stubPipeline({ preview: blocked });
-    const picked = stubPicker({ choice: "cancelled", selected: null });
+    const picked = stubPicker({ choice: "selected", selected: selection([descriptor()]) });
     const ui = stubUi(["selected"]);
     const { ctx } = stubContext();
 
     await createResumeFromCommand(deps({ picker: picked.picker, ui: ui.ui })).run(
       ctx,
-      ["cx-1"],
+      [],
       pipeline.pipeline,
     );
 
@@ -738,7 +744,7 @@ describe("T-PIX-16 — nothing is sent after landing", () => {
     expect(context.switches).toHaveLength(1);
     expect(context.sendMessage).not.toHaveBeenCalled();
     expect(context.runTool).not.toHaveBeenCalled();
-    expect(pipeline.order).toEqual(["preview", "commit"]);
+    expect(pipeline.order).toEqual(["commit"]);
   });
 });
 
@@ -898,7 +904,7 @@ describe("pipeline failure diagnostics", () => {
       const { ctx, switches } = stubContext();
       await createResumeFromCommand(deps({ picker: picked.picker, ui: ui.ui })).run(
         ctx,
-        stage === "list" ? [] : ["s-1"],
+        [],
         pipeline.pipeline,
       );
       const diagnostics = ui.blocks.flat().filter((line) => line.includes("ambiguous repository"));
@@ -912,7 +918,7 @@ describe("pipeline failure diagnostics", () => {
       expect(pipeline.commitCalls).toEqual([]);
       expect(switches).toEqual([]);
       expect(ui.asked).toHaveLength(stage === "commit" ? 1 : 0);
-      expect(picked.calls).toEqual([]);
+      expect(picked.calls).toHaveLength(stage === "list" ? 0 : 1);
     },
   );
 
@@ -925,11 +931,11 @@ describe("pipeline failure diagnostics", () => {
       const failure = wrapped ? new Error("preview failed", { cause: cancellation }) : cancellation;
       pipeline.pipeline.preview = vi.fn().mockRejectedValue(failure);
       const ui = stubUi();
-      const picked = stubPicker({ choice: "cancelled", selected: null });
+      const picked = stubPicker({ choice: "selected", selected: selection([descriptor()]) });
       await expect(
         createResumeFromCommand(deps({ picker: picked.picker, ui: ui.ui })).run(
           stubContext().ctx,
-          ["s-1"],
+          [],
           pipeline.pipeline,
         ),
       ).rejects.toBe(failure);
@@ -939,19 +945,63 @@ describe("pipeline failure diagnostics", () => {
   );
 });
 
+async function inWorkspaceDir(run: (workspace: string) => Promise<void>): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), "resume-from-workspace-"));
+  const workspace = join(root, "workspace");
+  await mkdir(workspace);
+  try {
+    await run(workspace);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
 describe("workspace argument", () => {
-  it("imports every source session of the named workspace", async () => {
-    const root = await mkdtemp(join(tmpdir(), "resume-from-workspace-"));
-    const workspace = join(root, "workspace");
-    await mkdir(workspace);
+  it("answers a workspace the listing cannot place, instead of confirming over nothing", async () => {
+    const rows = [session("pi", "pi-1", "/Users/me/.pi", "/somewhere/else")];
+    const pipeline = stubPipeline({ listing: listing(rows) });
+    const picked = stubPicker({ choice: "cancelled", selected: null });
+    const ui = stubUi(["selected"]);
+    await inWorkspaceDir(async (workspace) => {
+      await createResumeFromCommand(deps({ picker: picked.picker, ui: ui.ui })).run(
+        stubContext().ctx,
+        [workspace],
+        pipeline.pipeline,
+      );
+      const shown = ui.blocks.flat().join("\n");
+      expect(shown).toContain(`No sessions to import for ${workspace}.`);
+      expect(ui.asked).toHaveLength(0);
+      expect(pipeline.previewCalls).toHaveLength(0);
+      expect(pipeline.commitCalls).toHaveLength(0);
+    });
+  });
+
+  it("says the preview count before the previews run, so a long import is visibly alive", async () => {
     const rows = [
-      session("pi", "pi-1", "/Users/me/.pi", workspace),
-      session("codex", "cx-1", "/Users/me/.codex", workspace),
+      session("pi", "pi-2", "/Users/me/.pi", "/repo"),
+      session("codex", "cx-1", "/Users/me/.codex", "/repo"),
     ];
     const pipeline = stubPipeline({ listing: listing(rows) });
     const ui = stubUi(["selected"]);
-    const picked = stubPicker({ choice: "cancelled", selected: null });
-    try {
+
+    await createResumeFromCommand(deps({ picker: keyPicker(["enter"], ui.ui), ui: ui.ui })).run(
+      stubContext().ctx,
+      [],
+      pipeline.pipeline,
+    );
+
+    expect(ui.blocks).toContainEqual(["Previewing 2 sessions…"]);
+  });
+
+  it("imports every source session of the named workspace", async () => {
+    await inWorkspaceDir(async (workspace) => {
+      const rows = [
+        session("pi", "pi-1", "/Users/me/.pi", workspace),
+        session("codex", "cx-1", "/Users/me/.codex", workspace),
+      ];
+      const pipeline = stubPipeline({ listing: listing(rows) });
+      const ui = stubUi(["selected"]);
+      const picked = stubPicker({ choice: "cancelled", selected: null });
       await createResumeFromCommand(deps({ picker: picked.picker, ui: ui.ui })).run(
         stubContext().ctx,
         [workspace],
@@ -960,9 +1010,27 @@ describe("workspace argument", () => {
       expect(pipeline.listCalls[0]?.workspacePath).toBe(workspace);
       expect(picked.calls).toHaveLength(0);
       expect(pipeline.commitCalls).toHaveLength(2);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
+      expect(pipeline.previewCalls).toHaveLength(0);
+      expect(ui.asked).toHaveLength(0);
+      expect(pipeline.commitCalls.map((call) => call.confirmationToken)).toEqual([null, null]);
+    });
+  });
+
+  it("imports an explicitly named session directly, without preview or confirmation", async () => {
+    const pipeline = stubPipeline();
+    const picked = stubPicker({ choice: "cancelled", selected: null });
+    const ui = stubUi();
+
+    await createResumeFromCommand(deps({ picker: picked.picker, ui: ui.ui })).run(
+      stubContext().ctx,
+      ["cx-1"],
+      pipeline.pipeline,
+    );
+
+    expect(pipeline.order).toEqual(["commit"]);
+    expect(pipeline.commitCalls[0]?.confirmationToken).toBeNull();
+    expect(ui.asked).toHaveLength(0);
+    expect(picked.calls).toHaveLength(0);
   });
 });
 

@@ -113,7 +113,7 @@ export interface PipelineCalls {
   commit: {
     request: ImportRequest;
     runtime: AgentRuntime;
-    confirmationToken: string;
+    confirmationToken: string | null;
   }[];
   /** The call names in the order they were made. */
   order: ("list" | "preview" | "commit")[];

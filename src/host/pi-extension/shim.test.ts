@@ -66,41 +66,43 @@ describe("Pi package shim provenance", () => {
       registerCommand() {},
     });
 
+    const render = (lines: string[], expanded: boolean) =>
+      renderer?.({ data: { lines } }, { expanded }, { bg: (_name, text) => text });
+    const lines = ["Imported from pi", "Source session: source-1", "Dropped: 57"];
+
     expect(renderer).toBeDefined();
-    const component = renderer?.(
-      { data: { lines: ["Imported from pi", "Source session: source-1", "Dropped: 57"] } },
-      { expanded: false },
-      { bg: (_name, text) => text },
-    );
-    expect(component?.render(80)).toEqual(["Imported from pi · Dropped: 57"]);
+    expect(render(lines, false)?.render(80)).toEqual(["Imported from pi · Dropped: 57"]);
+    expect(render(lines, true)?.render(80)).toEqual(lines);
 
-    const expanded = renderer?.(
-      { data: { lines: ["Imported from pi", "Source session: source-1", "Dropped: 57"] } },
-      { expanded: true },
-      { bg: (_name, text) => text },
-    );
-    expect(expanded?.render(80)).toEqual([
-      "Imported from pi",
-      "Source session: source-1",
-      "Dropped: 57",
-    ]);
-
-    const unsafe = renderer?.(
-      { data: { lines: ["Imported from pi\u001b[31m", "Dropped: 57"] } },
-      { expanded: true },
-      { bg: (_name, text) => text },
-    );
+    const unsafe = render(["Imported from pi\u001b[31m", "Dropped: 57"], true);
     expect(unsafe?.render(80)[0]).toBe("Imported from pi ");
     expect(unsafe?.render(10)).toEqual(["Imported f\u001b[0m", "Dropped: 5\u001b[0m"]);
 
-    const wide = renderer?.(
-      { data: { lines: ["界界界界界", "Dropped: 57"] } },
-      { expanded: true },
-      { bg: (_name, text) => text },
-    );
-    expect(wide?.render(5)).toEqual(["界界\u001b[0m", "Dropp\u001b[0m"]);
+    expect(render(["界界界界界", "Dropped: 57"], true)?.render(5)).toEqual([
+      "界界\u001b[0m",
+      "Dropp\u001b[0m",
+    ]);
   });
 });
+
+function outerContext(): OuterCommandContext {
+  return {
+    cwd: "/repo",
+    hasUI: true,
+    ui: {
+      notify: vi.fn(),
+      confirm: vi.fn().mockResolvedValue(true),
+      select: vi.fn().mockResolvedValue(undefined),
+    },
+    switchSession: vi.fn().mockResolvedValue({ cancelled: false }),
+  };
+}
+
+function registerRun(run: unknown): void {
+  activatePiExtension.mockImplementation(async (deps: MockPiActivation) => {
+    deps.registrar.registerCommand({ name: "resume-from", description: "test", run });
+  });
+}
 
 describe("Pi package shim picker", () => {
   it("groups the listing by path and offers the paths alone", async () => {
@@ -116,16 +118,8 @@ describe("Pi package shim picker", () => {
 
     const handler = await loadOuterCommand();
     const select = vi.fn().mockResolvedValue("/repo/worktree");
-    const context: OuterCommandContext = {
-      cwd: "/repo",
-      hasUI: true,
-      ui: {
-        notify: vi.fn(),
-        confirm: vi.fn().mockResolvedValue(true),
-        select,
-      },
-      switchSession: vi.fn().mockResolvedValue({ cancelled: false }),
-    };
+    const context = outerContext();
+    context.ui.select = select;
 
     await handler("", context);
 
@@ -160,28 +154,11 @@ describe("Pi package shim command boundary", () => {
     const previous = process.env.PI_CODING_AGENT_DIR;
     process.env.PI_CODING_AGENT_DIR = "relative-pi-home";
     const run = vi.fn().mockResolvedValue(undefined);
-    activatePiExtension.mockImplementation(async (deps: MockPiActivation) => {
-      deps.registrar.registerCommand({
-        name: "resume-from",
-        description: "test",
-        run,
-      });
-    });
+    registerRun(run);
 
     try {
       const handler = await loadOuterCommand();
-      const context: OuterCommandContext = {
-        cwd: "/repo",
-        hasUI: true,
-        ui: {
-          notify: vi.fn(),
-          confirm: vi.fn().mockResolvedValue(true),
-          select: vi.fn().mockResolvedValue(undefined),
-        },
-        switchSession: vi.fn().mockResolvedValue({ cancelled: false }),
-      };
-
-      await handler(" sessions/my session.jsonl ", context);
+      await handler(" sessions/my session.jsonl ", outerContext());
 
       const activation = activatePiExtension.mock.calls.at(-1)?.[0] as MockPiActivation | undefined;
       expect(activation?.home).toMatch(/\/relative-pi-home$/);
@@ -192,5 +169,26 @@ describe("Pi package shim command boundary", () => {
       if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previous;
     }
+  });
+
+  it("ends quietly when Pi invalidates the command context mid-run", async () => {
+    registerRun(
+      vi
+        .fn()
+        .mockRejectedValue(
+          new Error("This extension ctx is stale after session replacement or reload."),
+        ),
+    );
+    const handler = await loadOuterCommand();
+
+    await expect(handler(" cx-1 ", outerContext())).resolves.toBeUndefined();
+  });
+
+  it("still surfaces failures that are not Pi's stale-context error", async () => {
+    const failure = new Error("the import pipeline exploded");
+    registerRun(vi.fn().mockRejectedValue(failure));
+    const handler = await loadOuterCommand();
+
+    await expect(handler(" cx-1 ", outerContext())).rejects.toBe(failure);
   });
 });

@@ -46,9 +46,8 @@ Session discovery is repository-scoped. A known session ID or file path still ha
 3. Read the preview of each session of that path and confirm the ones to import.
 4. Pi opens the newest imported session.
 
-Every session of the chosen path is imported on its own, each with its own preview and its own
-confirmation. Cancelling one leaves the others alone. Pi opens the newest one and tells you the
-session ID and the command that opens each of the others.
+Every session of the chosen path is imported on its own, each with its own preview and confirmation.
+Pi opens the newest one and names each of the others and the command that opens it.
 
 Pi creates and opens the new session in the current process. It leaves the prompt empty.
 

@@ -19,9 +19,8 @@ Restart Pi after the install. The package registers `/resume-from`.
 3. Read the preview of each session and confirm the ones to import.
 4. Pi opens the newest imported session.
 
-Every session of the chosen path is imported on its own: each one has its own preview and its own
-confirmation, and cancelling one leaves the others alone. The sessions imported before the newest
-one stay in Pi's home; Pi tells you the session ID and how to open them.
+Every session of the chosen path is imported on its own, each with its own preview and confirmation.
+Sessions imported before the newest stay in Pi's home; Pi names each and how to open it.
 
 Pi writes the new session and opens it. The next prompt is empty, so you decide
 when work starts.

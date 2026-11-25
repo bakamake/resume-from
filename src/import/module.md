@@ -681,7 +681,7 @@ interface ImportPipeline {
   list(request: ListRequest): Promise<Listing>;
   /** Writes nothing (FR-16). */
   preview(request: ImportRequest): Promise<PreviewReport>;
-  /** Runs only after the user confirmed the preview (FR-20). */
+  /** Confirmed preview token (FR-20); null when the user named the session explicitly. */
   commit(
     request: ImportRequest,
     runtime: AgentRuntime,
@@ -784,6 +784,8 @@ writes. A blocked plan still produces a report — the user is told why the impo
 
 **`commit(request, runtime, confirmationToken)`** repeats the whole of `preview`, refuses unless the
 token matches that exact recomputed selection, plan, and report, then refuses if the plan is blocked.
+A null token stands for an explicit selection the user never previewed: the token check is skipped,
+every other refusal stays.
 Only then does it call `SessionLander.land` with the target adapter, committer, runtime handle, and
 the destination context produced by that same recomputation. The pipeline checks cancellation after
 preview construction and immediately before landing, even when no further Git lookup is needed.

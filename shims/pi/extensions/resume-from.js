@@ -103,15 +103,25 @@ export default function resumeFrom(pi) {
         );
       }
 
-      await command.run(
-        {
-          cwd: context.cwd,
-          home,
-          switchSession: (path, options) =>
-            context.switchSession(path, options),
-        },
-        commandArgs(rawArgs),
-      );
+      try {
+        await command.run(
+          {
+            cwd: context.cwd,
+            home,
+            switchSession: (path, options) =>
+              context.switchSession(path, options),
+          },
+          commandArgs(rawArgs),
+        );
+      } catch (error) {
+        // The stale-context error means the session that asked is gone: end quietly.
+        if (
+          !(error instanceof Error) ||
+          !error.message.includes("extension ctx is stale")
+        ) {
+          throw error;
+        }
+      }
     },
   });
 }
