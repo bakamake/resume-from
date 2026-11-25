@@ -244,16 +244,20 @@ agent.
 
 > Test: Stop the source agent. Reach its usage limit. The list and the import still work.
 
-**FR-9** — In Pi, the command opens an interactive picker.
+**FR-9** — In Pi, the command opens an interactive picker. The picker groups the sessions by the
+path they ran in, and every entry is that path alone. Choosing a path imports every session of it,
+one by one, each with its own preview and confirmation.
 
 > Test: Type `/resume-from`. Move with the arrow keys. Press Enter to select.
+> Amended 2026-11-24: the picker groups by path and the entries show the path only.
 
 **FR-10** — In Codex and Claude Code, the command prints a numbered list. The user runs the command
 again with a number.
 
 > Test: `/resume-from` prints 10 rows. `/resume-from 3` opens the preview of row 3.
 
-**FR-11** — Each row shows the agent, the home, the time, the title, and the turn count.
+**FR-11** — Each row of the numbered list shows the agent, the home, the time, the title, and the
+turn count. The picker of FR-9 shows the path of a workspace instead.
 
 **FR-12** — The user can give a session ID or a file path instead of a number.
 

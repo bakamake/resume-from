@@ -101,7 +101,7 @@ interface ImportPipeline {
   commit(
     request: ImportRequest,
     runtime: AgentRuntime,
-    confirmationToken: string,
+    confirmationToken: string | null,
   ): Promise<LandingResult>;
 }
 ```

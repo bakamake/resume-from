@@ -70,6 +70,8 @@ export type SelectionInput =
 export interface SearchScope {
   /** Absolute path of the repository the listing is filtered to (FR-13). */
   repoRoot: string;
+  allWorkspaces?: boolean;
+  workspacePath?: string;
   /** When set, only this agent is searched (FR-15). */
   onlyAgent: AgentId | null;
   /** When set, only this home is searched (FR-2). */

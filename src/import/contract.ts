@@ -145,6 +145,8 @@ export interface ListRequest {
   target: TargetProfile;
   onlyAgent: AgentId | null;
   onlyHome: HomePath | null;
+  allWorkspaces?: boolean;
+  workspacePath?: string;
 }
 
 /** What to preview, and later what to commit (FR-16, FR-20). */
@@ -155,6 +157,8 @@ export interface ImportRequest {
   selection: SelectionInput;
   onlyAgent: AgentId | null;
   onlyHome: HomePath | null;
+  allWorkspaces?: boolean;
+  workspacePath?: string;
 }
 
 /** One import, from listing to landing. Every host drives these three calls. */

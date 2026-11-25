@@ -602,7 +602,7 @@ interface ImportPipeline {
   commit(
     request: ImportRequest,
     runtime: AgentRuntime,
-    confirmationToken: string,
+    confirmationToken: string | null,
   ): Promise<LandingResult>;
 }
 ```
@@ -884,7 +884,9 @@ Changes that require **only this module** to change:
   make the preview and the commit disagree.
 - **The registry is the only list of adapters in the tree.** A second list anywhere is a defect.
 - **The runtime handle is supplied only by the entry point of the same agent.** The command binary
-  passes `null`; the Pi extension passes Pi's context. This module never constructs one.
+  passes `null`; the Pi extension passes Pi's context, or the runtime that declines the move for
+  the sessions of a path that are committed before the one that moves the user. This module never
+  constructs one.
 - **This module never writes a file** and never reads a session. It builds the things that do.
 - **A configuration error stops the command before anything is listed** (FR-56), with the field and
   what to change.
@@ -969,8 +971,8 @@ Changes that require **only this module** to change:
 
 **T-HOS-16 — the runtime handle is never constructed here**
 - Scenario: a static check.
-- Expected behavior: `AgentRuntime` values originate only in `src/host/pi-extension/` (Pi's context)
-  and as `null` in `src/host/cli/`.
+- Expected behavior: `AgentRuntime` values originate only in `src/host/pi-extension/` (Pi's context
+  and the runtime that declines the move) and as `null` in `src/host/cli/`.
 
 **T-HOS-17 — the module graph has no cycle**
 - Scenario: the import graph over `src/`.

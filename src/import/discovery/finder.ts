@@ -2,7 +2,7 @@
 // user's choice, and load it. It never writes and never calls a model (NG-1, AC-4, FR-8).
 
 import { realpath } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import type {
   CanonicalSession,
   DiscoveryDestination,
@@ -60,6 +60,27 @@ function isMatch(evidence: DirectoryEvidence, destination: DirectoryEvidence | n
 
 function isCancellation(reason: unknown): boolean {
   return reason instanceof Error && reason.name === "AbortError";
+}
+
+/** Every session of a search target, kept to one workspace when one is named. */
+async function listWorkspaceRows(
+  target: SearchTarget,
+  workspacePath: string | undefined,
+): Promise<Listing> {
+  const rows = await target.adapter.listSessions(target.home);
+  if (workspacePath === undefined) return { rows, failures: [], excluded: 0 };
+  const workspace = await canonicalPath(workspacePath);
+  const kept = await Promise.all(
+    rows.map(async (row) => {
+      const path = row.startDirectory ?? row.repoPath ?? dirname(row.filePath);
+      return (await canonicalPath(path)) === workspace ? row : null;
+    }),
+  );
+  return {
+    rows: kept.filter((row): row is SessionDescriptor => row !== null),
+    failures: [],
+    excluded: 0,
+  };
 }
 
 export function createSessionFinder(deps: DiscoveryDeps): SessionFinder {
@@ -246,7 +267,11 @@ export function createSessionFinder(deps: DiscoveryDeps): SessionFinder {
     const targets = await buildSearchList(deps.adapters, deps.config, scope);
     deps.repo.checkCancellation();
     const collected = await Promise.all(
-      targets.map((target) => collect(target, destination, lookup)),
+      targets.map((target) =>
+        scope.allWorkspaces
+          ? listWorkspaceRows(target, scope.workspacePath)
+          : collect(target, destination, lookup),
+      ),
     );
     deps.repo.checkCancellation();
 

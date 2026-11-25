@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 import { activatePiExtension } from "resume-from";
-import { formatRow, safeLines, safeText } from "resume-from/pi-extension";
+import { formatEntry, groupByPath, safeLines, safeText } from "resume-from/pi-extension";
 
 const COMMAND_NAME = "resume-from";
 const DESCRIPTION =
@@ -63,18 +63,17 @@ function pickerFor(context) {
     async pick(listing) {
       if (!context.hasUI) return { choice: "cancelled", selected: null };
 
-      const options = listing.rows.map((row, index) =>
-        safeText(`${index + 1}. ${formatRow(row)}`),
-      );
+      const groups = groupByPath(listing.rows);
+      const options = groups.map((group) => formatEntry(group.path));
       const selected = await context.ui.select(
-        "Select a session to import",
+        "Select a path to import",
         options,
       );
-      const row =
-        listing.rows[selected === undefined ? -1 : options.indexOf(selected)];
-      return row === undefined
+      const group =
+        groups[selected === undefined ? -1 : options.indexOf(selected)];
+      return group === undefined
         ? { choice: "cancelled", selected: null }
-        : { choice: "selected", selected: row };
+        : { choice: "selected", selected: group };
     },
   };
 }

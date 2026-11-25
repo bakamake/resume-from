@@ -208,6 +208,40 @@ describe("T-HOS-16 — the runtime handle is never constructed here", () => {
     return found;
   };
 
+  /** The functions of a file that build a runtime handle: an object with a switchSession. */
+  const runtimeBuilders = (source: { ast: ts.SourceFile }): string[] => {
+    const found: string[] = [];
+    const walk = (node: ts.Node): void => {
+      if (
+        ts.isObjectLiteralExpression(node) &&
+        node.properties.some(
+          (property) =>
+            ts.isPropertyAssignment(property) &&
+            ts.isIdentifier(property.name) &&
+            property.name.text === "switchSession",
+        )
+      ) {
+        found.push(enclosingFunctionName(node) ?? "anonymous");
+      }
+      ts.forEachChild(node, walk);
+    };
+    walk(source.ast);
+    return found;
+  };
+
+  /** The name of the function a node sits in. */
+  const enclosingFunctionName = (node: ts.Node): string | null => {
+    let current: ts.Node | undefined = node.parent;
+    while (current !== undefined) {
+      if (ts.isFunctionDeclaration(current) && current.name !== undefined) {
+        return current.name.text;
+      }
+      if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) return "anonymous";
+      current = current.parent;
+    }
+    return null;
+  };
+
   const fileIn = (dir: string, name: string) =>
     readSources(dir, { tests: false }).find((source) => source.path.endsWith(sep + name));
 
@@ -217,10 +251,12 @@ describe("T-HOS-16 — the runtime handle is never constructed here", () => {
     expect(runner === undefined ? [] : runtimeArguments(runner)).toEqual(["null"]);
   });
 
-  it("the Pi extension passes Pi's own command context", () => {
+  it("the Pi extension passes a runtime of Pi's own agent", () => {
     const command = fileIn(PI_EXTENSION_DIR, "command.ts");
     expect(command).toBeDefined();
-    expect(command === undefined ? [] : runtimeArguments(command)).toEqual(["ctx"]);
+    // The last commit receives Pi's own context; earlier ones a runtime that declines the move.
+    expect(command === undefined ? [] : runtimeArguments(command)).toEqual(["runtime"]);
+    expect(command === undefined ? [] : runtimeBuilders(command)).toEqual(["stayingRuntime"]);
   });
 
   it("this module passes none, because it drives no commit", () => {

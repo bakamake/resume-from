@@ -67,15 +67,23 @@ export type UserChoice = "selected" | "cancelled";
 
 /** The picker over the listing (FR-9). */
 export interface SessionPicker {
-  /** Resolves with the chosen row, or with "cancelled" when the user escaped. */
+  /** Resolves with the chosen path, or with "cancelled" when the user escaped. */
   pick(listing: Listing): Promise<PickResult>;
+}
+
+/** The sessions of one path, as the picker found them. */
+export interface PathSelection {
+  /** The path the picker showed. */
+  path: string;
+  /** The sessions recorded in that path, newest first. */
+  sessions: SessionDescriptor[];
 }
 
 /** The result of one picker interaction. */
 export interface PickResult {
   choice: UserChoice;
-  /** Set when choice is "selected". */
-  selected: SessionDescriptor | null;
+  /** Set when choice is "selected": the chosen path and the sessions it holds. */
+  selected: PathSelection | null;
 }
 
 /** Pi's command context, as this module needs it. */

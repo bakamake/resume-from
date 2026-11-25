@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -13,6 +13,7 @@ import type {
   LandingResult,
   Listing,
   ListRequest,
+  PathSelection,
   PiCommandContext,
   PickResult,
   PiSwitchContext,
@@ -50,6 +51,33 @@ function row(agent: AgentId, id: string, home: string): SessionDescriptor {
     filePath: `${home}/sessions/${id}.json`,
   });
 }
+
+function session(
+  agent: AgentId,
+  id: string,
+  home: string,
+  startDirectory: string,
+): SessionDescriptor {
+  return descriptor({
+    ref: { agent, home, id },
+    title: `${agent} ${id}`,
+    filePath: `${home}/sessions/${id}.json`,
+    repoPath: startDirectory,
+    repoPaths: [startDirectory],
+    startDirectory,
+  });
+}
+
+/** The picker hands the command a path and the sessions it holds. */
+function selection(sessions: SessionDescriptor[]): PathSelection {
+  return { path: sessions[0]?.startDirectory ?? "/repo", sessions };
+}
+
+/** Two sessions of one path, newest first. */
+const pathGroupRows = [
+  session("pi", "pi-2", "/Users/me/.pi", "/repo"),
+  session("codex", "cx-1", "/Users/me/.codex", "/repo"),
+];
 
 function listing(rows: SessionDescriptor[], failures: HomeFailure[] = []): Listing {
   return { rows, failures, excluded: 0 };
@@ -108,6 +136,7 @@ function stubPipeline(
     preview?: PreviewReport;
     landing?: LandingResult;
     onCommit?: (request: ImportRequest, runtime: AgentRuntime, confirmationToken: string) => void;
+    emulateSwitch?: boolean;
   } = {},
 ): PipelineStub {
   const stub: PipelineStub = {
@@ -130,11 +159,29 @@ function stubPipeline(
         stub.commitCalls.push({ request, runtime, confirmationToken });
         stub.order.push("commit");
         opts.onCommit?.(request, runtime, confirmationToken);
-        return opts.landing ?? landing();
+        if (opts.landing !== undefined) return opts.landing;
+        if (opts.emulateSwitch === true) {
+          const switched = await switchWith(runtime);
+          return landing({
+            switched,
+            handover: switched ? null : { sessionId: "new-1", command: "pi --resume new-1" },
+          });
+        }
+        return landing();
       },
     },
   };
   return stub;
+}
+
+/** What the Pi adapter does with the runtime handle: it asks the runtime to move the user. */
+async function switchWith(runtime: AgentRuntime): Promise<boolean> {
+  const candidate = runtime as Partial<PiSwitchContext>;
+  if (typeof candidate.switchSession !== "function") return false;
+  const result = await candidate.switchSession("/Users/me/.pi/sessions/new-1.json", {
+    withSession: () => {},
+  });
+  return result?.cancelled !== true;
 }
 
 function stubUi(answers: UserChoice[] = []): {
@@ -525,7 +572,7 @@ describe("T-PIX-11 — nothing is written on any cancel path", () => {
       const uiPreview = stubUi(["cancelled"]);
       await createResumeFromCommand(
         deps({
-          picker: stubPicker({ choice: "selected", selected: descriptor({}) }).picker,
+          picker: stubPicker({ choice: "selected", selected: selection([descriptor({})]) }).picker,
           ui: uiPreview.ui,
         }),
       ).run(stubContext({ home }).ctx, [], atPreview.pipeline);
@@ -698,18 +745,18 @@ describe("T-PIX-16 — nothing is sent after landing", () => {
 // ---------------------------------------------------------------- behavior tests
 
 describe("T-PIX-19 — pick, confirm, hand the context over", () => {
-  it("commits once with Pi's own context and stays silent after the switch", async () => {
+  it("imports every session of the chosen path and hands the context to the last one", async () => {
     const rows = [
-      row("pi", "pi-1", "/Users/me/.pi"),
-      row("claude-code", "cc-1", "/Users/me/.claude-team"),
-      row("codex", "cx-1", "/Users/me/.codex"),
-      row("pi", "pi-2", "/Users/me/.pi"),
+      session("pi", "pi-2", "/Users/me/.pi", "/repo"),
+      session("claude-code", "cc-1", "/Users/me/.claude-team", "/repo/worktree"),
+      session("codex", "cx-1", "/Users/me/.codex", "/repo"),
+      session("pi", "pi-1", "/Users/me/.pi", "/repo"),
     ];
     const result = landing({ switched: true });
     const pipeline = stubPipeline({ listing: listing(rows), landing: result });
-    const ui = stubUi(["selected"]);
+    const ui = stubUi(["selected", "selected", "selected"]);
     const context = stubContext();
-    const picker = keyPicker(["down", "down", "enter"], ui.ui);
+    const picker = keyPicker(["enter"], ui.ui);
 
     await createResumeFromCommand(deps({ picker, ui: ui.ui })).run(
       context.ctx,
@@ -717,16 +764,94 @@ describe("T-PIX-19 — pick, confirm, hand the context over", () => {
       pipeline.pipeline,
     );
 
-    expect(pipeline.order).toEqual(["list", "preview", "commit"]);
-    expect(pipeline.previewCalls[0]?.selection).toEqual({
-      by: "file-path",
-      path: "/Users/me/.codex/sessions/cx-1.json",
-    });
-    expect(pipeline.commitCalls).toHaveLength(1);
-    expect(pipeline.commitCalls[0]?.runtime).toBe(context.ctx);
+    // The path of the newest session holds three sessions; the other path holds one.
+    expect(pipeline.order).toEqual([
+      "list",
+      "preview",
+      "preview",
+      "preview",
+      "commit",
+      "commit",
+      "commit",
+    ]);
+    expect(pipeline.previewCalls.map((call) => call.selection)).toEqual([
+      { by: "file-path", path: "/Users/me/.pi/sessions/pi-1.json" },
+      { by: "file-path", path: "/Users/me/.codex/sessions/cx-1.json" },
+      { by: "file-path", path: "/Users/me/.pi/sessions/pi-2.json" },
+    ]);
+    expect(pipeline.commitCalls).toHaveLength(3);
+    // Only the last commit moves the user; the earlier ones carry a runtime that declines it.
+    expect(pipeline.commitCalls[0]?.runtime).not.toBe(context.ctx);
+    expect(pipeline.commitCalls[1]?.runtime).not.toBe(context.ctx);
+    expect(pipeline.commitCalls[2]?.runtime).toBe(context.ctx);
     expect(ui.blocks).not.toContainEqual(result.marker.lines);
     expect(context.sendMessage).not.toHaveBeenCalled();
     expect(context.runTool).not.toHaveBeenCalled();
+  });
+});
+
+describe("T-PIX-9a — the sessions of a path are imported one by one", () => {
+  it("commits the sessions before the last without a move, and the last one with Pi's context", async () => {
+    const pipeline = stubPipeline({ listing: listing(pathGroupRows), emulateSwitch: true });
+    const ui = stubUi(["selected", "selected"]);
+    const context = stubContext();
+
+    await createResumeFromCommand(deps({ picker: keyPicker(["enter"], ui.ui), ui: ui.ui })).run(
+      context.ctx,
+      [],
+      pipeline.pipeline,
+    );
+
+    expect(pipeline.commitCalls).toHaveLength(2);
+    expect(pipeline.commitCalls[0]?.runtime).not.toBe(context.ctx);
+    expect(pipeline.commitCalls[1]?.runtime).toBe(context.ctx);
+    // The first session was written and the user was told how to open it; the second one
+    // moved the user, and its marker is left to the fresh session.
+    const shown = ui.blocks.flat().join("\n");
+    expect(shown).toContain("new-1");
+    expect(shown).toContain("Open it with: pi --resume new-1");
+    const markers = ui.blocks.filter(
+      (block) => block.join("\n") === landing().marker.lines.join("\n"),
+    );
+    expect(markers).toHaveLength(1);
+  });
+});
+
+describe("T-PIX-21 — one confirmation for a path", () => {
+  it("cancels the entire path when confirmation is declined", async () => {
+    const pipeline = stubPipeline({ listing: listing(pathGroupRows) });
+    const ui = stubUi(["cancelled", "selected"]);
+
+    await createResumeFromCommand(deps({ picker: keyPicker(["enter"], ui.ui), ui: ui.ui })).run(
+      stubContext().ctx,
+      [],
+      pipeline.pipeline,
+    );
+
+    expect(pipeline.previewCalls).toHaveLength(2);
+    expect(pipeline.commitCalls).toHaveLength(0);
+    expect(ui.asked).toHaveLength(1);
+  });
+});
+
+describe("T-PIX-22 — a failed preview stops the group", () => {
+  it("does not commit any sessions when a preview fails", async () => {
+    const pipeline = stubPipeline({ listing: listing(pathGroupRows) });
+    const failure = new Error("the source session could not be read");
+    pipeline.pipeline.preview = vi
+      .fn()
+      .mockResolvedValueOnce(report())
+      .mockRejectedValueOnce(failure);
+    const ui = stubUi(["selected", "selected"]);
+
+    await createResumeFromCommand(deps({ picker: keyPicker(["enter"], ui.ui), ui: ui.ui })).run(
+      stubContext().ctx,
+      [],
+      pipeline.pipeline,
+    );
+
+    expect(pipeline.commitCalls).toHaveLength(0);
+    expect(ui.blocks.flat().join("\n")).toContain("the source session could not be read");
   });
 });
 
@@ -769,7 +894,7 @@ describe("pipeline failure diagnostics", () => {
       );
       pipeline.pipeline[stage] = vi.fn().mockRejectedValue(failure);
       const ui = stubUi(["selected"]);
-      const picked = stubPicker({ choice: "selected", selected: descriptor() });
+      const picked = stubPicker({ choice: "selected", selected: selection([descriptor()]) });
       const { ctx, switches } = stubContext();
       await createResumeFromCommand(deps({ picker: picked.picker, ui: ui.ui })).run(
         ctx,
@@ -812,4 +937,61 @@ describe("pipeline failure diagnostics", () => {
       expect(ui.asked).toEqual([]);
     },
   );
+});
+
+describe("workspace argument", () => {
+  it("imports every source session of the named workspace", async () => {
+    const root = await mkdtemp(join(tmpdir(), "resume-from-workspace-"));
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    const rows = [
+      session("pi", "pi-1", "/Users/me/.pi", workspace),
+      session("codex", "cx-1", "/Users/me/.codex", workspace),
+    ];
+    const pipeline = stubPipeline({ listing: listing(rows) });
+    const ui = stubUi(["selected"]);
+    const picked = stubPicker({ choice: "cancelled", selected: null });
+    try {
+      await createResumeFromCommand(deps({ picker: picked.picker, ui: ui.ui })).run(
+        stubContext().ctx,
+        [workspace],
+        pipeline.pipeline,
+      );
+      expect(pipeline.listCalls[0]?.workspacePath).toBe(workspace);
+      expect(picked.calls).toHaveLength(0);
+      expect(pipeline.commitCalls).toHaveLength(2);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("preview concurrency", () => {
+  it("previews a path concurrently and commits in order", async () => {
+    const rows = [
+      session("pi", "pi-1", "/Users/me/.pi", "/repo"),
+      session("codex", "cx-1", "/Users/me/.codex", "/repo"),
+    ];
+    const pipeline = stubPipeline({ listing: listing(rows) });
+    let active = 0;
+    let peak = 0;
+    pipeline.pipeline.preview = async () => {
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return report();
+    };
+    const ui = stubUi(["selected"]);
+    await createResumeFromCommand(deps({ picker: keyPicker(["enter"], ui.ui), ui: ui.ui })).run(
+      stubContext().ctx,
+      [],
+      pipeline.pipeline,
+    );
+    expect(peak).toBe(2);
+    expect(pipeline.commitCalls.map((call) => call.request.selection)).toEqual([
+      { by: "file-path", path: "/Users/me/.codex/sessions/cx-1.json" },
+      { by: "file-path", path: "/Users/me/.pi/sessions/pi-1.json" },
+    ]);
+  });
 });

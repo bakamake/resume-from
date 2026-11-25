@@ -116,9 +116,10 @@ Check the preview's canonical `Destination:` directory and warnings before confi
 ### In Pi
 
 1. Run `/resume-from`.
-2. Select a source session in the native picker.
-3. Read the preview.
-4. Confirm.
+2. Select a path in the native picker. The picker lists the paths the sessions of this repository
+   ran in, one entry per path.
+3. Read the preview of each session of that path and confirm the ones to import.
+4. Pi opens the newest imported session.
 
 Pi opens the imported session with an empty prompt. You decide when to continue.
 

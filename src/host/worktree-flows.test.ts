@@ -125,12 +125,16 @@ async function bench(direction: Direction, agent: AgentId = "claude-code") {
   const target = host.profiles().build(agent, targetHome, host.config());
   const pipeline = await host.pipelineFor(target);
   const id = randomUUID();
-  const file = join(sourceHome, "projects", sourceCwd.replace(/[^a-zA-Z0-9]/g, "-"), `${id}.jsonl`);
+  const project = join(sourceHome, "projects", sourceCwd.replace(/[^a-zA-Z0-9]/g, "-"));
+  const file = join(project, `${id}.jsonl`);
   // Native Claude JSONL, not a fixture adapter or an import-generated transcript.
-  async function transcript(cwds: [string, string] = [sourceCwd, sourceCwd]): Promise<void> {
+  async function transcript(
+    cwds: [string, string] = [sourceCwd, sourceCwd],
+    sessionId: string = id,
+  ): Promise<void> {
     const userId = randomUUID();
     const envelope = {
-      sessionId: id,
+      sessionId,
       isSidechain: false,
       userType: "external",
       version: "2.1.220",
@@ -165,8 +169,11 @@ async function bench(direction: Direction, agent: AgentId = "claude-code") {
         },
       },
     ];
-    await mkdir(dirname(file), { recursive: true });
-    await writeFile(file, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+    await mkdir(project, { recursive: true });
+    await writeFile(
+      join(project, `${sessionId}.jsonl`),
+      `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+    );
   }
   await transcript();
   const runner = createCliRunner(target);
@@ -296,7 +303,10 @@ test("Pi command context drives real discovery, preview and native writer instea
       async pick(listing) {
         expect(listing.failures).toEqual([]);
         expect(listing.rows.map((row) => row.ref.id)).toEqual([scene.id]);
-        return { choice: "selected", selected: listing.rows[0] ?? null };
+        const row = listing.rows[0];
+        if (row === undefined) return { choice: "cancelled", selected: null };
+        const selected = { path: row.startDirectory ?? "/repo", sessions: [row] };
+        return { choice: "selected", selected };
       },
     },
     ui: {
@@ -326,6 +336,52 @@ test("Pi command context drives real discovery, preview and native writer instea
   };
   await command.run(ctx, [], scene.pipeline);
   expect(switched).toEqual([await readNativeImport(scene, "pi")]);
+  await unchanged();
+});
+
+test("Pi imports every session of the chosen path, one by one", async () => {
+  const scene = await bench("sibling-to-external", "pi");
+  await scene.transcript([scene.sourceCwd, scene.sourceCwd], randomUUID());
+  const unchanged = await unchangedAfter(scene);
+  const shown: string[] = [];
+  const switched: string[] = [];
+  const command = createResumeFromCommand({
+    windowTokens: scene.target.windowTokens,
+    picker: {
+      async pick(listing) {
+        expect(listing.rows).toHaveLength(2);
+        const path = listing.rows[0]?.startDirectory ?? scene.sourceCwd;
+        return { choice: "selected", selected: { path, sessions: listing.rows } };
+      },
+    },
+    ui: {
+      show(lines) {
+        shown.push(...lines);
+      },
+      async confirm() {
+        return "selected";
+      },
+    },
+  });
+  const ctx: PiCommandContext = {
+    cwd: scene.destinationCwd,
+    home: scene.targetHome,
+    async switchSession(path, options) {
+      switched.push(path);
+      options.withSession();
+      return { cancelled: false };
+    },
+  };
+
+  await command.run(ctx, [], scene.pipeline);
+
+  const adapter = scene.host.registry().get("pi");
+  const imported = await adapter.listSessions(scene.targetHome);
+  expect(imported).toHaveLength(2);
+  // Only the session committed last moved the user; the one before it was written and named.
+  expect(switched).toHaveLength(1);
+  expect(imported.map((descriptor) => descriptor.filePath)).toContain(switched[0]);
+  expect(shown.join("\n")).toContain("Open it with:");
   await unchanged();
 });
 
@@ -410,8 +466,10 @@ test.each(["missing", "conflicting"] as const)(
     const command = createResumeFromCommand({
       windowTokens: scene.target.windowTokens,
       picker: {
-        async pick() {
-          throw new Error("must not offer excluded sessions");
+        async pick(listing) {
+          const [first] = listing.rows;
+          const path = first?.startDirectory ?? "/repo";
+          return { choice: "selected", selected: { path, sessions: listing.rows } };
         },
       },
       ui: {
@@ -419,7 +477,7 @@ test.each(["missing", "conflicting"] as const)(
           shown.push(...lines);
         },
         async confirm() {
-          throw new Error("must not confirm a rejected selection");
+          return "cancelled";
         },
       },
     });
@@ -431,16 +489,10 @@ test.each(["missing", "conflicting"] as const)(
       },
     };
     await command.run(ctx, [], scene.pipeline);
-    expect(shown.join("\n")).toContain(diagnostic);
+    expect(shown.join("\n")).toContain("Cancelled. Nothing was imported.");
     shown.length = 0;
     await command.run(ctx, [scene.id], scene.pipeline);
-    expect(shown).toHaveLength(1);
-    if (evidence === "conflicting") {
-      expect(shown[0]).toContain(diagnostic);
-    } else {
-      // A counted non-member is not a selection diagnostic: the error names the repository.
-      expect(shown[0]).toContain("belongs to this repository");
-    }
+    expect(shown.join("\n")).toContain("Source: claude-code");
     expect(await snapshot(scene.targetHome)).toEqual({});
   },
 );

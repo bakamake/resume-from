@@ -4,6 +4,7 @@ export {
   type ResumeFromDeps,
 } from "./command.js";
 export type {
+  PathSelection,
   PiCommandContext,
   PickResult,
   PiResumeFromCommand,
@@ -12,10 +13,12 @@ export type {
 } from "./contract.js";
 export {
   createKeyPicker,
-  formatRow,
+  formatEntry,
+  groupByPath,
   type KeyPickerDeps,
   type KeySource,
   type PickerKey,
+  pathOf,
 } from "./picker.js";
 export { safeLines, safeText } from "./presentation.js";
 export {

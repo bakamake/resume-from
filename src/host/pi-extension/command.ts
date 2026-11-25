@@ -1,4 +1,7 @@
+import { stat } from "node:fs/promises";
+import { resolve } from "node:path";
 import type {
+  AgentRuntime,
   HandoverInstruction,
   HomeFailure,
   ImportPipeline,
@@ -11,6 +14,7 @@ import type {
   SessionPicker,
   TargetProfile,
 } from "./contract.js";
+import { pathOf } from "./picker.js";
 import { safeText } from "./presentation.js";
 import type { PiUi } from "./ui.js";
 
@@ -61,31 +65,56 @@ async function runResumeFrom(
     target: targetOf(deps, ctx),
     onlyAgent: null,
     onlyHome: null,
+    allWorkspaces: true,
   };
 
-  const selection = await resolveSelection(deps, args, pipeline, scope);
-  if (selection === null) return;
+  const workspace = await workspaceArgument(args);
+  if (workspace !== null) scope.workspacePath = workspace;
+  const selections = await resolveSelections(deps, args, pipeline, scope, workspace);
+  if (selections === null) return;
 
-  const request: ImportRequest = { ...scope, selection };
-  const report = await withDiagnostic(deps.ui, "preview", () => pipeline.preview(request));
-  if (report === null) return;
-  deps.ui.show(report.lines); // Verbatim and unreordered (FR-21).
-
-  if (report.blocked) {
-    deps.ui.show([report.blockedReason ?? BLOCKED_FALLBACK]);
-    return; // A blocked preview is never offered for confirmation (FR-33).
+  const prepared: Array<{
+    request: ImportRequest;
+    report: Awaited<ReturnType<ImportPipeline["preview"]>>;
+  }> = [];
+  const requests = selections.map((selection): ImportRequest => ({ ...scope, selection }));
+  let next = 0;
+  const preview = async () => {
+    for (;;) {
+      const index = next++;
+      const request = requests[index];
+      if (request === undefined) return;
+      const report = await withDiagnostic(deps.ui, "preview", () => pipeline.preview(request));
+      if (report === null) return;
+      prepared[index] = { request, report };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(4, requests.length) }, preview));
+  if (prepared.length !== requests.length || prepared.some((item) => item === undefined)) return;
+  for (const { report } of prepared) {
+    deps.ui.show(report.lines);
+    if (report.blocked) {
+      deps.ui.show([report.blockedReason ?? BLOCKED_FALLBACK]);
+      return;
+    }
   }
-
   if ((await deps.ui.confirm(CONFIRM_QUESTION)) !== "selected") {
     deps.ui.show([CANCELLED_LINE]);
-    return; // Nothing is written before the user confirms (FR-16, FR-20).
+    return;
   }
+  for (const [index, { request, report }] of prepared.entries()) {
+    const runtime = index === prepared.length - 1 ? ctx : stayingRuntime();
+    const landing = await withDiagnostic(deps.ui, "import", () =>
+      pipeline.commit(request, runtime, report.confirmationToken),
+    );
+    if (landing === null) return;
+    if (!landing.switched) present(deps.ui, landing);
+  }
+}
 
-  // Pi's own context is the runtime handle the Pi adapter switches with (FR-44).
-  const landing = await withDiagnostic(deps.ui, "import", () =>
-    pipeline.commit(request, ctx, report.confirmationToken),
-  );
-  if (landing !== null && !landing.switched) present(deps.ui, landing);
+/** A runtime that declines the move: the session is written, and the user opens it later. */
+function stayingRuntime(): AgentRuntime {
+  return { switchSession: async () => ({ cancelled: true }) };
 }
 
 /** Catch only pipeline failures, not UI errors or presentation after a successful switch. */
@@ -118,13 +147,14 @@ function targetOf(deps: ResumeFromDeps, ctx: PiCommandContext): TargetProfile {
   return { agent: "pi", home: ctx.home, windowTokens: deps.windowTokens };
 }
 
-/** The selection, or null when the user cancelled or there was nothing to pick. */
-async function resolveSelection(
+/** The selections to import, or null when the user cancelled or there was nothing to pick. */
+async function resolveSelections(
   deps: ResumeFromDeps,
   args: string[],
   pipeline: ImportPipeline,
   scope: ListRequest,
-): Promise<SelectionInput | null> {
+  workspace: string | null,
+): Promise<SelectionInput[] | null> {
   const given = args.filter((argument) => argument.trim().length > 0);
   if (given.length === 1 && HELP_ARGUMENTS.has(given[0] ?? "")) {
     deps.ui.show(HELP_LINES);
@@ -135,7 +165,7 @@ async function resolveSelection(
     return null;
   }
   const [only] = given;
-  if (only !== undefined) return parseArgument(only); // An argument skips the picker (FR-12).
+  if (only !== undefined && workspace === null) return [parseArgument(only)];
 
   const listing = await withDiagnostic(deps.ui, "listing", () => pipeline.list(scope));
   if (listing === null) return null;
@@ -155,14 +185,33 @@ async function resolveSelection(
     return null; // A picker over nothing is a trap.
   }
 
+  if (workspace !== null) {
+    const group = listing.rows.filter((row) => pathOf(row) === workspace);
+    return group.map((row): SelectionInput => ({ by: "file-path", path: row.filePath })).reverse();
+  }
   const picked = await deps.picker.pick(listing);
   if (picked.choice !== "selected" || picked.selected === null) {
     deps.ui.show([CANCELLED_LINE]);
     return null;
   }
   // The file path, not the session ID: an ID is unique only inside one home and
-  // a SelectionInput carries no home.
-  return { by: "file-path", path: picked.selected.filePath };
+  // a SelectionInput carries no home. Oldest first, so the newest session of the path is
+  // the one that moves the user.
+  return picked.selected.sessions
+    .map((session): SelectionInput => ({ by: "file-path", path: session.filePath }))
+    .reverse();
+}
+
+async function workspaceArgument(args: string[]): Promise<string | null> {
+  const [argument] = args.filter((value) => value.trim().length > 0);
+  if (argument === undefined || HELP_ARGUMENTS.has(argument)) return null;
+  const path = resolve(argument);
+  try {
+    return (await stat(path)).isDirectory() ? path : null;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
 }
 
 /** A session ID or a file path (FR-12). Resolving the path is the pipeline's job. */

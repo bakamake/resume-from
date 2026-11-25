@@ -122,3 +122,24 @@ it("T-DIS-23 — two profiles of one agent appear together", async () => {
     ["main-1", main],
   ]);
 });
+
+it("lists every source for one workspace", async () => {
+  const piHome = await makeDir(root, "pi-home");
+  const codexHome = await makeDir(root, "codex-home");
+  const other = await makeDir(root, "other");
+  const write = (home: string, id: string, day: string, repoPath: string) =>
+    writeSession(home, { id, updatedAt: `2026-07-0${day}T10:00:00.000Z`, repoPath });
+  await write(piHome, "pi-1", "1", repoA);
+  await write(codexHome, "cx-1", "2", repoA);
+  await write(piHome, "pi-2", "3", other);
+  const finder = finderOf([
+    makeStubAdapter({ agent: "pi", defaultHome: piHome }),
+    makeStubAdapter({ agent: "codex", defaultHome: codexHome }),
+  ]);
+  const listed = await finder.list({
+    ...scopeFor(repoA),
+    allWorkspaces: true,
+    workspacePath: repoA,
+  });
+  expect(listed.rows.map((row) => row.ref.id)).toEqual(["cx-1", "pi-1"]);
+});

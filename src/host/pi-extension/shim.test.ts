@@ -28,6 +28,9 @@ type OuterCommandContext = {
 type OuterCommandHandler = (rawArgs: string, context: OuterCommandContext) => Promise<void>;
 type MockPiActivation = {
   home: string | null;
+  picker?: {
+    pick(listing: unknown): Promise<{ choice: string; selected: unknown }>;
+  };
   registrar: {
     registerCommand(definition: { name: string; description: string; run: unknown }): void;
   };
@@ -96,6 +99,59 @@ describe("Pi package shim provenance", () => {
       { bg: (_name, text) => text },
     );
     expect(wide?.render(5)).toEqual(["界界\u001b[0m", "Dropp\u001b[0m"]);
+  });
+});
+
+describe("Pi package shim picker", () => {
+  it("groups the listing by path and offers the paths alone", async () => {
+    let picker: MockPiActivation["picker"];
+    activatePiExtension.mockImplementation(async (deps: MockPiActivation) => {
+      picker = deps.picker;
+      deps.registrar.registerCommand({
+        name: "resume-from",
+        description: "test",
+        run: vi.fn().mockResolvedValue(undefined),
+      });
+    });
+
+    const handler = await loadOuterCommand();
+    const select = vi.fn().mockResolvedValue("/repo/worktree");
+    const context: OuterCommandContext = {
+      cwd: "/repo",
+      hasUI: true,
+      ui: {
+        notify: vi.fn(),
+        confirm: vi.fn().mockResolvedValue(true),
+        select,
+      },
+      switchSession: vi.fn().mockResolvedValue({ cancelled: false }),
+    };
+
+    await handler("", context);
+
+    const session = (id: string, startDirectory: string) => ({
+      ref: { agent: "pi", home: "/Users/me/.pi", id },
+      title: id,
+      startedAt: "2026-08-01T09:00:00Z",
+      updatedAt: "2026-08-01T10:00:00Z",
+      turnCount: 7,
+      repoPath: startDirectory,
+      repoPaths: [startDirectory],
+      startDirectory,
+      filePath: `/Users/me/.pi/sessions/${id}.jsonl`,
+    });
+    const picked = await picker?.pick({
+      rows: [session("s-1", "/repo"), session("s-2", "/repo/worktree"), session("s-3", "/repo")],
+      failures: [],
+      excluded: 0,
+    });
+
+    expect(select).toHaveBeenCalledWith("Select a path to import", ["/repo", "/repo/worktree"]);
+    expect(picked?.choice).toBe("selected");
+    expect(picked?.selected).toMatchObject({
+      path: "/repo/worktree",
+      sessions: [{ ref: { id: "s-2" } }],
+    });
   });
 });
 

@@ -17,10 +17,11 @@ switch of C-10 needs a live command context, and a command binary in another pro
 ## Functional Responsibilities
 
 - Register the `/resume-from` command with Pi.
-- Open an interactive picker over the listing: move with the arrow keys, select with Enter (FR-9).
+- Open an interactive picker over the listing grouped by path: every entry is a path, move with the
+  arrow keys, select with Enter (FR-9).
 - Accept a session ID or a file path as an argument, skipping the picker (FR-12).
-- Show the preview as `PreviewReport.lines` gives it, and take the user's confirmation (FR-16,
-  FR-20, FR-21).
+- Import the sessions of the chosen path one by one, each through the single-session mechanism:
+  preview, confirmation, commit (FR-16, FR-20, FR-21).
 - Commit through the pipeline, passing Pi's command context as the runtime handle so the Pi adapter
   can switch (FR-44).
 - Show the provenance marker to the user without putting it in the model context (FR-47, FR-48).
@@ -36,7 +37,8 @@ touch Pi's extension API, which is an internal of an application measured once a
 ## Encapsulated Knowledge
 
 - **How Pi extensions register a command** and how a command handler receives its context.
-- **The picker interaction**: keys, paging, what a row looks like, and how a cancel is reported.
+- **The picker interaction**: keys, paging, what an entry looks like, and how a cancel is reported.
+- **The grouping rule**: a session belongs to the path it started in, and a path is one entry.
 - **The call-site rule.** That `ctx.switchSession` is called from a **command handler**, never from
   an event handler. C-10 proved the command-handler path works and returned `{"cancelled":false}`;
   the deleted design documents claimed an event handler deadlocks and that claim was never tested.
@@ -288,7 +290,7 @@ interface ImportPipeline {
   commit(
     request: ImportRequest,
     runtime: AgentRuntime,
-    confirmationToken: string,
+    confirmationToken: string | null,
   ): Promise<LandingResult>;
 }
 ```
@@ -301,15 +303,23 @@ type UserChoice = "selected" | "cancelled";
 
 /** The picker over the listing (FR-9). */
 interface SessionPicker {
-  /** Resolves with the chosen row, or with "cancelled" when the user escaped. */
+  /** Resolves with the chosen path, or with "cancelled" when the user escaped. */
   pick(listing: Listing): Promise<PickResult>;
+}
+
+/** The sessions of one path, as the picker found them. */
+interface PathSelection {
+  /** The path the picker showed. */
+  path: string;
+  /** The sessions recorded in that path, newest first. */
+  sessions: SessionDescriptor[];
 }
 
 /** The result of one picker interaction. */
 interface PickResult {
   choice: UserChoice;
-  /** Set when choice is "selected". */
-  selected: SessionDescriptor | null;
+  /** Set when choice is "selected": the chosen path and the sessions it holds. */
+  selected: PathSelection | null;
 }
 ```
 
@@ -407,6 +417,12 @@ Pi's **session file** changing does not touch this module — that is `src/adapt
   session ID and how to open it later, exactly as a create-only agent would (FR-45).
 - **The runtime handle passed to `commit` is Pi's own context** and is never passed for an import
   whose target is not Pi. A handle for the wrong agent is a programming error the adapter rejects.
+- **The sessions of a path are imported oldest first, and only the last one moves the user.** A Pi
+  command context is stale after a switch, so the sessions committed before it carry a runtime that
+  declines the move: they are written, and the user opens them later. The session that moves the
+  user is the newest of the path.
+- **A cancelled confirmation skips that session and the group goes on.** A failed preview or commit
+  stops the group.
 - **This module holds no rule of requirement sections C to I** (FR-60), and no knowledge of any
   session file format.
 - **This module never writes a file.** The only write path is `src/platform/store/`, reached through
@@ -425,13 +441,15 @@ picker. Tests marked **live** need an installed Pi and a throwaway session direc
 - Scenario: `run` with empty arguments.
 - Expected behavior: `pipeline.list` is called and the picker is opened over the result (FR-9).
 
-**T-PIX-2 — the picker shows every field FR-11 requires**
-- Scenario: a listing of three sessions across agents and homes.
-- Expected behavior: each row shows the agent, the home, the time, the title and the turn count.
+**T-PIX-2 — the picker shows one path per workspace**
+- Scenario: a listing of three sessions across agents, homes and workspaces.
+- Expected behavior: every entry is a path and nothing else; the sessions of one workspace share
+  one entry.
 
 **T-PIX-3 — arrow keys move and Enter selects**
-- Scenario: a scripted key sequence — down, down, Enter — over a five-row listing.
-- Expected behavior: the third row is selected. This is the requirement's own FR-9 test.
+- Scenario: a scripted key sequence — down, Enter — over a listing of three workspaces.
+- Expected behavior: the second path is selected, with the sessions it holds. This is the
+  requirement's own FR-9 test.
 
 **T-PIX-4 — Escape cancels**
 - Scenario: the picker receives Escape.
@@ -461,6 +479,11 @@ picker. Tests marked **live** need an installed Pi and a throwaway session direc
 - Scenario: a successful confirmation.
 - Expected behavior: `commit` receives the same `PiCommandContext` instance that Pi supplied, as the
   runtime handle.
+
+**T-PIX-9a — the sessions of a path are imported one by one**
+- Scenario: a path holds three sessions; the user confirms each preview.
+- Expected behavior: `preview` and `commit` run once per session, oldest first; the last commit
+  receives Pi's own context, the earlier ones a runtime that declines the move.
 
 **T-PIX-10 — landing presentation respects Pi's session lifecycle**
 - Scenario: parameterized — `switched` true; `switched` false with a handover.
@@ -510,16 +533,26 @@ picker. Tests marked **live** need an installed Pi and a throwaway session direc
 ### Behavior Tests
 
 **T-PIX-19 — pick, confirm, hand the context over**
-- Scenario: a stub pipeline over a fixture listing; the user types `/resume-from`, moves to a Codex
-  row, presses Enter, and confirms the preview.
-- Expected behavior: `commit` is called once, with Pi's own context as the runtime handle; the old
-  command UI is not touched after the switch; nothing is sent and no tool is run afterwards (FR-9,
-  FR-46, FR-47). The landing itself is the pipeline's job and is not asserted here.
+- Scenario: a stub pipeline over a fixture listing; the user types `/resume-from`, presses Enter on
+  a path, and confirms the previews.
+- Expected behavior: `commit` is called once per session of that path, with Pi's own context as the
+  runtime handle of the last one; the old command UI is not touched after the switch; nothing is
+  sent and no tool is run afterwards (FR-9, FR-46, FR-47). The landing itself is the pipeline's job
+  and is not asserted here.
 
 **T-PIX-20 — a cancelled switch is not a loss**
 - Scenario: a stub pipeline returning a `LandingResult` with `switched` false and a handover.
 - Expected behavior: the user is told the session exists and how to open it — the same outcome a
   create-only agent gives (FR-45). Nothing is retried and nothing is discarded.
+
+**T-PIX-21 — a cancelled confirmation skips one session of a path**
+- Scenario: a path holds two sessions; the user cancels the first preview and confirms the second.
+- Expected behavior: the first session is not written, the second one is, and the group goes on.
+
+**T-PIX-22 — a failed session stops the group**
+- Scenario: a path holds two sessions; the preview of the second one fails.
+- Expected behavior: the first session is imported, the failure is shown once, and the group
+  stops there. Nothing is retried and no later session is previewed.
 
 _The live end-to-end scenario that was T-PIX-19 and T-PIX-20's acceptance case is owned by the root
 as T-ROO-13. It needs a real Pi, a real Codex session, and the whole composed system — none of which

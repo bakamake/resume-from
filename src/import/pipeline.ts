@@ -74,6 +74,8 @@ interface Computed {
 function scopeOf(request: ListRequest | ImportRequest): SearchScope {
   return {
     repoRoot: request.destinationCwd,
+    allWorkspaces: request.allWorkspaces ?? false,
+    ...(request.workspacePath === undefined ? {} : { workspacePath: request.workspacePath }),
     onlyAgent: request.onlyAgent,
     onlyHome: request.onlyHome,
   };
